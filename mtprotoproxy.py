@@ -868,6 +868,7 @@ class ProxyReqStreamReader(LayeredStreamReaderBase):
         RPC_PROXY_ANS = b"\x0d\xda\x03\x44"
         RPC_CLOSE_EXT = b"\xa2\x34\xb6\x5e"
         RPC_SIMPLE_ACK = b"\x9b\x40\xac\x3b"
+        RPC_UNKNOWN = b'\xdf\xa2\x30\x57'
 
         data = await self.upstream.read(1)
 
@@ -886,8 +887,11 @@ class ProxyReqStreamReader(LayeredStreamReaderBase):
             conn_id, confirm = data[4:12], data[12:16]
             return confirm, {"SIMPLE_ACK": True}
 
+        if ans_type == RPC_UNKNOWN:
+            return b"", {"SKIP_SEND": True}
+
         print_err("unknown rpc ans type:", ans_type)
-        return b""
+        return b"", {"SKIP_SEND": True}
 
 
 class ProxyReqStreamWriter(LayeredStreamWriterBase):
@@ -1570,6 +1574,9 @@ async def tg_connect_reader_to_writer(rd, wr, user, rd_buf_size, is_upstream):
             else:
                 extra = {}
 
+            if extra.get("SKIP_SEND"):
+                continue
+
             if not data:
                 wr.write_eof()
                 await wr.drain()
@@ -1917,6 +1924,16 @@ async def get_encrypted_cert(host, port, server_name):
     record3_type, record3 = await get_tls_record(reader)
     if record3_type != 23:
         return b""
+
+    if len(record3) < MIN_CERT_LEN:
+        record4_type, record4 = await get_tls_record(reader)
+        if record4_type != 23:
+            return b""
+        msg = ("The MASK_HOST %s sent some TLS record before certificate record, this makes the " +
+               "proxy more detectable") % config.MASK_HOST
+        print_err(msg)
+
+        return record4
 
     return record3
 
